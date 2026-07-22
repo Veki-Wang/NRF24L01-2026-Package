@@ -22,6 +22,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "NRF24L01.h"
+#include "Key.h"
+#include "OLED.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,7 +34,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define KEY1  1
+#define KEY2  2
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -40,6 +44,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c2;
+
 SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart2;
@@ -53,6 +59,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_I2C2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -60,6 +67,13 @@ static void MX_USART2_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+uint8_t KeyNum;
+ 
+uint8_t SendFlag;								//发送标志位
+uint8_t SendSuccessCount, SendFailedCount;		//发送成功计次，发送失败计次
+ 
+uint8_t ReceiveFlag;							//接收标志位
+uint8_t ReceiveSuccessCount, ReceiveFailedCount;   //接收成功计次，接收失败计次
 /* USER CODE END 0 */
 
 /**
@@ -91,9 +105,108 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_SPI1_Init();
+  // MX_SPI1_Init();  // 软件SPI模式，暂不用硬件SPI
   MX_USART2_UART_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
+
+  /* ====== 第一步：LED闪烁3次，验证代码在运行 ====== */
+  /* 用PB0(CE引脚)作为调试灯，闪烁3次 */
+  for(int i = 0; i < 3; i++)
+  {
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+    HAL_Delay(200);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    HAL_Delay(200);
+  }
+  /* 如果LED没有闪烁 → MCU没运行，检查供电和烧录 */
+
+  /* ====== 第二步：初始化OLED ====== */
+  OLED_Init();
+  OLED_Clear();
+  OLED_ShowString(0, 0, "T:000-000-0", OLED_8X16);
+  OLED_ShowString(0, 16,"R:000-000-0", OLED_8X16);
+  OLED_Update();
+
+  /* ====== 第三步：I2C自检 ====== */
+  {
+    /* 尝试读取OLED状态（发送一个命令后检查I2C是否ACK） */
+    uint8_t test_cmd = 0x00;
+    HAL_StatusTypeDef i2c_status;
+    i2c_status = HAL_I2C_Mem_Write(&hi2c2, 0x78, 0x00,
+                                    I2C_MEMADD_SIZE_8BIT, &test_cmd, 1, 100);
+    if(i2c_status != HAL_OK)
+    {
+      /* I2C通信失败！可能是地址不对或接线问题 */
+      /* LED快闪10次表示I2C错误 */
+      for(int i = 0; i < 10; i++)
+      {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+        HAL_Delay(50);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+        HAL_Delay(50);
+      }
+      /* 尝试备用地址 0x7A（部分OLED模块SA0引脚接高电平） */
+      i2c_status = HAL_I2C_Mem_Write(&hi2c2, 0x7A, 0x00,
+                                      I2C_MEMADD_SIZE_8BIT, &test_cmd, 1, 100);
+      if(i2c_status == HAL_OK)
+      {
+        /* 地址是0x7A，需要修改OLED.c中的地址 */
+        /* LED慢闪2次表示找到了备用地址 */
+        for(int i = 0; i < 2; i++)
+        {
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+          HAL_Delay(500);
+          HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+          HAL_Delay(500);
+        }
+        /* 卡住：请修改OLED.c中0x78为0x7A */
+        while(1);
+      }
+      else
+      {
+        /* 两个地址都不通 → 检查接线 */
+        while(1);  // LED灭=硬件问题
+      }
+    }
+  }
+
+  /* ====== 第四步：NRF24L01自检 ====== */
+  NRF24L01_Init();
+  {
+    uint8_t check_val = NRF24L01_ReadReg(NRF24L01_CONFIG);
+    if(check_val == 0xFF || check_val == 0x00)
+    {
+      OLED_Clear();
+      OLED_ShowString(0, 0, "NRF ERR!", OLED_8X16);
+      OLED_Update();
+      /* LED常亮 = NRF24L01异常 */
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+      while(1);
+    }
+    else
+    {
+      OLED_Clear();
+      OLED_ShowString(0, 0, "NRF OK!", OLED_8X16);
+      OLED_Update();
+      HAL_Delay(500);
+      OLED_ShowString(0, 0, "T:000-000-0", OLED_8X16);
+      OLED_ShowString(0, 16,"R:000-000-0", OLED_8X16);
+      OLED_Update();
+    }
+  }
+
+  /* 初始化发送数据 */
+  NRF24L01_TxPacket[0] = 0x00;
+  NRF24L01_TxPacket[1] = 0x01;
+  NRF24L01_TxPacket[2] = 0x02;
+  NRF24L01_TxPacket[3] = 0x03;
+
+  /* 初始化计数变量 */
+  SendSuccessCount = 0;
+  SendFailedCount = 0;
+  ReceiveSuccessCount = 0;
+  ReceiveFailedCount = 0;
 
   /* USER CODE END 2 */
 
@@ -104,6 +217,74 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    KeyNum = Key_Get();		//读取按键，获取键码
+		
+		if (KeyNum == 1)				//按键按下
+		{
+			/* 变换测试数据，便于观察实验现象 */
+			NRF24L01_TxPacket[0]++;
+			NRF24L01_TxPacket[1]++;
+			NRF24L01_TxPacket[2]++;
+			NRF24L01_TxPacket[3]++;
+			
+			/* 调用NRF24L01_Send函数，发送数据，同时返回发送标志位 */
+			SendFlag = NRF24L01_Send();
+			
+			if (SendFlag == 1){			//发送标志位为1，表示发送成功
+				SendSuccessCount++;	//发送成功计次变量自增
+			}
+			else{						//发送标志位不为1，即2/3/4，表示发送不成功
+				SendFailedCount++;	//发送失败计次变量自增
+			}
+			
+			OLED_ShowNum(1, 3, SendSuccessCount, 3, OLED_8X16);	//显示发送成功次数
+			OLED_ShowNum(1, 7, SendFailedCount, 3, OLED_8X16);		//显示发送失败次数
+			OLED_ShowNum(1, 11, SendFlag, 1, OLED_8X16);			//显示最近一次的发送标志位
+
+			/* OLED显示发送数据 */
+			OLED_ShowHexNum(2, 1, NRF24L01_TxPacket[0], 2, OLED_8X16);
+			OLED_ShowHexNum(2, 4, NRF24L01_TxPacket[1], 2, OLED_8X16);
+			OLED_ShowHexNum(2, 7, NRF24L01_TxPacket[2], 2, OLED_8X16);
+			OLED_ShowHexNum(2, 10, NRF24L01_TxPacket[3], 2, OLED_8X16);
+
+			/* TX字符串闪烁一次，表明发送了一次数据 */
+			OLED_ShowString(1, 15, "TX", OLED_8X16);
+			OLED_Update();
+			HAL_Delay(100);
+			OLED_ShowString(1, 15, "  ", OLED_8X16);
+			OLED_Update();
+		}
+		
+		/* 调用NRF24L01_Receive函数，接收数据，同时返回接收标志位 */
+		ReceiveFlag = NRF24L01_Receive();
+		
+		if (ReceiveFlag)				//接收标志位不为0，表示收到了一个数据包
+		{
+			if (ReceiveFlag == 1){		//接收标志位为1，表示接收成功
+				ReceiveSuccessCount++;	//接收成功计次变量自增
+			}
+			else{		//接收标志位不为0也不为1，即2/3，表示此次接收产生了错误
+				ReceiveFailedCount++;	//接收失败计次变量自增
+			}
+			
+			OLED_ShowNum(3, 3, ReceiveSuccessCount, 3, OLED_8X16);	//显示接收成功次数
+			OLED_ShowNum(3, 7, ReceiveFailedCount, 3, OLED_8X16);	//显示接收失败次数
+			OLED_ShowNum(3, 11, ReceiveFlag, 1, OLED_8X16);		//显示最近一次的接收标志位
+
+			/* OLED显示接收数据 */
+			OLED_ShowHexNum(4, 1, NRF24L01_RxPacket[0], 2, OLED_8X16);
+			OLED_ShowHexNum(4, 4, NRF24L01_RxPacket[1], 2, OLED_8X16);
+			OLED_ShowHexNum(4, 7, NRF24L01_RxPacket[2], 2, OLED_8X16);
+			OLED_ShowHexNum(4, 10, NRF24L01_RxPacket[3], 2, OLED_8X16);
+
+			/* RX字符串闪烁一次，表明接收到了一次数据 */
+			OLED_ShowString(3, 15, "RX", OLED_8X16);
+			OLED_Update();
+			HAL_Delay(100);
+			OLED_ShowString(3, 15, "  ", OLED_8X16);
+			OLED_Update();
+
+    }
   }
   /* USER CODE END 3 */
 }
@@ -151,6 +332,54 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.Timing = 0x40B285C2;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
+
 }
 
 /**
@@ -268,7 +497,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pin = CE_Pin|CSN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : key1_Pin key2_Pin */
+  GPIO_InitStruct.Pin = key1_Pin|key2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
