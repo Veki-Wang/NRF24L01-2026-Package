@@ -24,59 +24,14 @@ void NRF24L01_W_CSN(uint8_t BitValue)
 	//置PB1引脚（连接CSN）为高/低电平，高or低取决于函数参数值
 }
 
-void NRF24L01_W_SCK(uint8_t BitValue)
-{
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, (GPIO_PinState)BitValue);
-	//置PA5引脚（连接SCK）为高/低电平，高or低取决于函数参数值
-}
+/* 硬件SPI通信实现部分 */
+extern SPI_HandleTypeDef hspi1;
 
-void NRF24L01_W_MOSI(uint8_t BitValue)
+uint8_t NRF24L01_SPI_SwapByte(uint8_t Byte)
 {
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, (GPIO_PinState)BitValue);
-	//置PA7引脚（连接MOSI）为高/低电平，高or低取决于函数参数值
-}
-
-uint8_t NRF24L01_R_MISO(void)
-{
-	return (uint8_t)HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_6);
-	//读取PA6引脚（连接MISO）的电平并返回
-}
-
-/* SPI通信实现部分 */
-uint8_t NRF24L01_SPI_SwapByte(uint8_t Byte)  //一次字节数据交换
-{
-	//主机把要发送的Byte从最高位开始逐位移到MOSI引脚输出
-	//同时将从机在MISO引脚返回的数据从最高位开始逐位从Byte的低位移入
-	for(int i = 0; i < 8; i++)
-	{
-		//从高位移出数据
-		if(Byte & 0x80)
-		{
-			NRF24L01_W_MOSI(1);
-		}
-		else
-		{
-			NRF24L01_W_MOSI(0);
-		}
-		
-		Byte <<= 1;   //Byte左移，高位移出，低位补0
-		
-		NRF24L01_W_SCK(1);  //SCK置高电平
-		
-		//移入数据至低位
-		if(NRF24L01_R_MISO())
-		{
-			Byte |= 0x01;
-		}
-		else
-		{
-			Byte &= ~0x01;
-		}
-		
-		NRF24L01_W_SCK(0);  //SCK置低电平
-	}
-	
-	return Byte;
+	uint8_t rx_data;
+	HAL_SPI_TransmitReceive(&hspi1, &Byte, &rx_data, 1, 100);
+	return rx_data;
 }
 
 /* 指令时序实现部分 */
@@ -239,27 +194,6 @@ void NRF24L01_TxMode(void)  //控制NRF24L01进入发送模式
 
 void NRF24L01_Init(void)
 {
-	/* ----- 引脚GPIO初始化（软件SPI：PA5=SCK, PA6=MISO, PA7=MOSI）----- */
-	GPIO_InitTypeDef GPIO_InitStruct = {0};
-	__HAL_RCC_GPIOA_CLK_ENABLE();
-
-	/* PA5(SCK) 和 PA7(MOSI) → 推挽输出 */
-	GPIO_InitStruct.Pin = GPIO_PIN_5 | GPIO_PIN_7;
-	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-	/* PA6(MISO) → 输入 */
-	GPIO_InitStruct.Pin = GPIO_PIN_6;
-	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
-	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-	/* 初始电平：SCK=0, MOSI=0 */
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
-
 	/* ----- 寄存器初始化，配置初始参数 ----- */
 	NRF24L01_WriteReg(NRF24L01_CONFIG, 0x08);      //CONFIG寄存器初始化
 	NRF24L01_WriteReg(NRF24L01_EN_AA, 0x3F);       //EN_AA寄存器初始化

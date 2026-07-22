@@ -105,7 +105,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  // MX_SPI1_Init();  // 软件SPI模式，暂不用硬件SPI
+  MX_SPI1_Init();
   MX_USART2_UART_Init();
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
